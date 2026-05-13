@@ -124,6 +124,22 @@ jobs:
             "/p:TreatWarningsAsErrors=false"
           )
 
+          $publishedFiles = @(Get-ChildItem -Path $publishUrl -Recurse -File -ErrorAction SilentlyContinue)
+          if ($publishedFiles.Count -eq 0) {
+            $packageTmp = Join-Path $env:GITHUB_WORKSPACE "obj/${{ env.BUILD_CONFIGURATION }}/Package/PackageTmp"
+            Add-Content -Path $buildLog -Value "PublishUrl was empty; checking MSBuild package staging output at $packageTmp"
+
+            if (Test-Path $packageTmp) {
+              Copy-Item -Path (Join-Path $packageTmp "*") -Destination $publishUrl -Recurse -Force
+              Add-Content -Path $buildLog -Value "Copied MSBuild package staging output to $publishUrl"
+            }
+          }
+
+          $publishedFiles = @(Get-ChildItem -Path $publishUrl -Recurse -File -ErrorAction SilentlyContinue)
+          if ($publishedFiles.Count -eq 0) {
+            throw "MSBuild completed, but no publish output was found in $publishUrl"
+          }
+
           Add-Content -Path $buildLog -Value "========== Publish output =========="
           Get-ChildItem -Path $publishUrl -Recurse | Select-Object -First 200 FullName | Out-String | Add-Content -Path $buildLog
 
@@ -188,77 +204,77 @@ jobs:
           name: dotnet-build-log
           path: logs
 
-      - name: Run CodeLogic Scan
-        if: needs.build.result == 'success' && steps.codelogic-config.outputs.configured == 'true'
-        shell: bash
-        run: |
-          set -euo pipefail
+      # - name: Run CodeLogic Scan
+      #   if: needs.build.result == 'success' && steps.codelogic-config.outputs.configured == 'true'
+      #   shell: bash
+      #   run: |
+      #     set -euo pipefail
+      #
+      #     image_host="${CODELOGIC_HOST#https://}"
+      #     image_host="${image_host#http://}"
+      #     image_host="${image_host%/}"
+      #     publish_dir="${GITHUB_WORKSPACE}/${{ env.PUBLISH_OUTPUT }}"
+      #
+      #     docker run --pull always --rm \
+      #       -e CODELOGIC_HOST \
+      #       -e AGENT_UUID \
+      #       -e AGENT_PASSWORD \
+      #       -v "${publish_dir}:/scan:ro" \
+      #       "${image_host}/codelogic_dotnet:latest" analyze \
+      #         --application "${{ env.APPLICATION_NAME }}" \
+      #         --path /scan \
+      #         --scan-space-name "${SCAN_SPACE_NAME}" \
+      #         --rescan \
+      #         --expunge-scan-sessions
 
-          image_host="${CODELOGIC_HOST#https://}"
-          image_host="${image_host#http://}"
-          image_host="${image_host%/}"
-          publish_dir="${GITHUB_WORKSPACE}/${{ env.PUBLISH_OUTPUT }}"
-
-          docker run --pull always --rm \
-            -e CODELOGIC_HOST \
-            -e AGENT_UUID \
-            -e AGENT_PASSWORD \
-            -v "${publish_dir}:/scan:ro" \
-            "${image_host}/codelogic_dotnet:latest" analyze \
-              --application "${{ env.APPLICATION_NAME }}" \
-              --path /scan \
-              --scan-space-name "${SCAN_SPACE_NAME}" \
-              --rescan \
-              --expunge-scan-sessions
-
-      - name: Send Build Info
-        if: always() && steps.codelogic-config.outputs.configured == 'true'
-        env:
-          BUILD_RESULT: ${{ needs.build.result }}
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mkdir -p "${GITHUB_WORKSPACE}/logs"
-          if [[ ! -s "${GITHUB_WORKSPACE}/logs/build.log" ]]; then
-            {
-              echo "WARNING: logs/build.log was missing or empty when send_build_info ran."
-              echo "Build job result: ${BUILD_RESULT}"
-              echo "Check earlier workflow steps for checkout, restore, or MSBuild failures."
-            } > "${GITHUB_WORKSPACE}/logs/build.log"
-          fi
-
-          case "${BUILD_RESULT}" in
-            success) BUILD_STATUS="SUCCESS" ;;
-            failure) BUILD_STATUS="FAILURE" ;;
-            cancelled) BUILD_STATUS="CANCELLED" ;;
-            skipped) BUILD_STATUS="SKIPPED" ;;
-            *) BUILD_STATUS="${BUILD_RESULT^^}" ;;
-          esac
-
-          image_host="${CODELOGIC_HOST#https://}"
-          image_host="${image_host#http://}"
-          image_host="${image_host%/}"
-
-          docker run --pull always --rm \
-            -e CODELOGIC_HOST \
-            -e AGENT_UUID \
-            -e AGENT_PASSWORD \
-            -v "${GITHUB_WORKSPACE}:/scan" \
-            -v "${GITHUB_WORKSPACE}/logs:/log_file_path" \
-            "${image_host}/codelogic_dotnet:latest" send_build_info \
-              --agent-uuid="${AGENT_UUID}" \
-              --agent-password="${AGENT_PASSWORD}" \
-              --server="${CODELOGIC_HOST}" \
-              --path=/scan \
-              --build-number="${{ github.run_number }}" \
-              --pipeline-system="GitHub Actions" \
-              --job-name="${{ github.repository }} - ${{ github.workflow }}" \
-              --build-status="${BUILD_STATUS}" \
-              --log-file=/log_file_path/build.log \
-              --log-lines=50000 \
-              --timeout=300 \
-              --verbose
+      # - name: Send Build Info
+      #   if: always() && steps.codelogic-config.outputs.configured == 'true'
+      #   env:
+      #     BUILD_RESULT: ${{ needs.build.result }}
+      #   shell: bash
+      #   run: |
+      #     set -euo pipefail
+      #
+      #     mkdir -p "${GITHUB_WORKSPACE}/logs"
+      #     if [[ ! -s "${GITHUB_WORKSPACE}/logs/build.log" ]]; then
+      #       {
+      #         echo "WARNING: logs/build.log was missing or empty when send_build_info ran."
+      #         echo "Build job result: ${BUILD_RESULT}"
+      #         echo "Check earlier workflow steps for checkout, restore, or MSBuild failures."
+      #       } > "${GITHUB_WORKSPACE}/logs/build.log"
+      #     fi
+      #
+      #     case "${BUILD_RESULT}" in
+      #       success) BUILD_STATUS="SUCCESS" ;;
+      #       failure) BUILD_STATUS="FAILURE" ;;
+      #       cancelled) BUILD_STATUS="CANCELLED" ;;
+      #       skipped) BUILD_STATUS="SKIPPED" ;;
+      #       *) BUILD_STATUS="${BUILD_RESULT^^}" ;;
+      #     esac
+      #
+      #     image_host="${CODELOGIC_HOST#https://}"
+      #     image_host="${image_host#http://}"
+      #     image_host="${image_host%/}"
+      #
+      #     docker run --pull always --rm \
+      #       -e CODELOGIC_HOST \
+      #       -e AGENT_UUID \
+      #       -e AGENT_PASSWORD \
+      #       -v "${GITHUB_WORKSPACE}:/scan" \
+      #       -v "${GITHUB_WORKSPACE}/logs:/log_file_path" \
+      #       "${image_host}/codelogic_dotnet:latest" send_build_info \
+      #         --agent-uuid="${AGENT_UUID}" \
+      #         --agent-password="${AGENT_PASSWORD}" \
+      #         --server="${CODELOGIC_HOST}" \
+      #         --path=/scan \
+      #         --build-number="${{ github.run_number }}" \
+      #         --pipeline-system="GitHub Actions" \
+      #         --job-name="${{ github.repository }} - ${{ github.workflow }}" \
+      #         --build-status="${BUILD_STATUS}" \
+      #         --log-file=/log_file_path/build.log \
+      #         --log-lines=50000 \
+      #         --timeout=300 \
+      #         --verbose
 
       - name: CodeLogic CI summary
         if: always()
