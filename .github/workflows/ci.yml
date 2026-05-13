@@ -1,0 +1,253 @@
+name: CI Pipeline (Build + CodeLogic Scan)
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: build-scan-${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: true
+
+env:
+  APPLICATION_NAME: Vidly_MVCProject
+  BUILD_CONFIGURATION: Release
+  PROJECT_FILE: Vidly_MVCProject.csproj
+  SOLUTION_FILE: Vidly_MVCProject.sln
+  PUBLISH_OUTPUT: artifacts/out
+
+jobs:
+  build:
+    name: Build .NET Framework app
+    runs-on: windows-latest
+
+    permissions:
+      contents: read
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Restore and build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          New-Item -ItemType Directory -Force -Path "logs", "${{ env.PUBLISH_OUTPUT }}" | Out-Null
+          $buildLog = Join-Path $env:GITHUB_WORKSPACE "logs/build.log"
+          "BUILD_LOG=$buildLog" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+          Set-Content -Path $buildLog -Encoding utf8 -Value @(
+            "========== CI build log =========="
+            "Repository: ${{ github.repository }}"
+            "Workflow: ${{ github.workflow }}  Run: ${{ github.run_id }}  Attempt: ${{ github.run_attempt }}"
+            "Ref: ${{ github.ref }}  SHA: ${{ github.sha }}"
+            "Runner OS: $env:RUNNER_OS"
+            "========== Tool versions =========="
+          )
+
+          function Invoke-LoggedNative {
+            param(
+              [Parameter(Mandatory = $true)]
+              [string] $Title,
+              [Parameter(Mandatory = $true)]
+              [string] $FilePath,
+              [Parameter(Mandatory = $true)]
+              [string[]] $Arguments
+            )
+
+            Add-Content -Path $buildLog -Value "========== $Title =========="
+            & $FilePath @Arguments 2>&1 | Tee-Object -FilePath $buildLog -Append
+            $exitCode = $LASTEXITCODE
+            if ($exitCode -ne 0) {
+              throw "$Title failed with exit code $exitCode"
+            }
+          }
+
+          Invoke-LoggedNative "nuget help" "nuget" @("help")
+          Invoke-LoggedNative "msbuild version" "msbuild" @("-version")
+
+          Invoke-LoggedNative "NuGet restore" "nuget" @(
+            "restore",
+            "${{ env.SOLUTION_FILE }}",
+            "-NonInteractive",
+            "-Verbosity",
+            "normal"
+          )
+
+          $publishUrl = Join-Path $env:GITHUB_WORKSPACE "${{ env.PUBLISH_OUTPUT }}"
+
+          Invoke-LoggedNative "MSBuild publish" "msbuild" @(
+            "${{ env.PROJECT_FILE }}",
+            "/m",
+            "/p:Configuration=${{ env.BUILD_CONFIGURATION }}",
+            "/p:Platform=AnyCPU",
+            "/p:DeployOnBuild=true",
+            "/p:WebPublishMethod=FileSystem",
+            "/p:DeleteExistingFiles=true",
+            "/p:PublishUrl=$publishUrl",
+            "/p:VisualStudioVersion=17.0",
+            "/p:TreatWarningsAsErrors=false"
+          )
+
+          Add-Content -Path $buildLog -Value "========== Publish output =========="
+          Get-ChildItem -Path $publishUrl -Recurse | Select-Object -First 200 FullName | Out-String | Add-Content -Path $buildLog
+
+      - name: Upload publish output
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-framework-publish
+          path: ${{ env.PUBLISH_OUTPUT }}
+          if-no-files-found: error
+
+      - name: Upload build log artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dotnet-build-log
+          path: logs/build.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  codelogic:
+    name: CodeLogic Scan
+    runs-on: ubuntu-latest
+    needs: build
+    if: always()
+
+    permissions:
+      contents: read
+
+    env:
+      CODELOGIC_HOST: ${{ vars.CODELOGIC_HOST || secrets.CODELOGIC_HOST }}
+      AGENT_UUID: ${{ secrets.AGENT_UUID }}
+      AGENT_PASSWORD: ${{ secrets.AGENT_PASSWORD }}
+      SCAN_SPACE_NAME: ${{ vars.CODELOGIC_SCAN_SPACE_NAME || 'MVCProject' }}
+
+    steps:
+      - name: Check CodeLogic configuration
+        id: codelogic-config
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -n "${CODELOGIC_HOST}" && -n "${AGENT_UUID}" && -n "${AGENT_PASSWORD}" ]]; then
+            echo "configured=true" >> "${GITHUB_OUTPUT}"
+            echo "CodeLogic credentials are configured."
+          else
+            echo "configured=false" >> "${GITHUB_OUTPUT}"
+            echo "CodeLogic credentials are not configured; scan and build-info steps will be skipped."
+          fi
+
+      - name: Download publish output
+        if: needs.build.result == 'success'
+        uses: actions/download-artifact@v4
+        with:
+          name: dotnet-framework-publish
+          path: ${{ env.PUBLISH_OUTPUT }}
+
+      - name: Download build log
+        if: always()
+        continue-on-error: true
+        uses: actions/download-artifact@v4
+        with:
+          name: dotnet-build-log
+          path: logs
+
+      - name: Run CodeLogic Scan
+        if: needs.build.result == 'success' && steps.codelogic-config.outputs.configured == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          image_host="${CODELOGIC_HOST#https://}"
+          image_host="${image_host#http://}"
+          image_host="${image_host%/}"
+          publish_dir="${GITHUB_WORKSPACE}/${{ env.PUBLISH_OUTPUT }}"
+
+          docker run --pull always --rm \
+            -e CODELOGIC_HOST \
+            -e AGENT_UUID \
+            -e AGENT_PASSWORD \
+            -v "${publish_dir}:/scan:ro" \
+            "${image_host}/codelogic_dotnet:latest" analyze \
+              --application "${{ env.APPLICATION_NAME }}" \
+              --path /scan \
+              --scan-space-name "${SCAN_SPACE_NAME}" \
+              --rescan \
+              --expunge-scan-sessions
+
+      - name: Send Build Info
+        if: always() && steps.codelogic-config.outputs.configured == 'true'
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "${GITHUB_WORKSPACE}/logs"
+          if [[ ! -s "${GITHUB_WORKSPACE}/logs/build.log" ]]; then
+            {
+              echo "WARNING: logs/build.log was missing or empty when send_build_info ran."
+              echo "Build job result: ${BUILD_RESULT}"
+              echo "Check earlier workflow steps for checkout, restore, or MSBuild failures."
+            } > "${GITHUB_WORKSPACE}/logs/build.log"
+          fi
+
+          case "${BUILD_RESULT}" in
+            success) BUILD_STATUS="SUCCESS" ;;
+            failure) BUILD_STATUS="FAILURE" ;;
+            cancelled) BUILD_STATUS="CANCELLED" ;;
+            skipped) BUILD_STATUS="SKIPPED" ;;
+            *) BUILD_STATUS="${BUILD_RESULT^^}" ;;
+          esac
+
+          image_host="${CODELOGIC_HOST#https://}"
+          image_host="${image_host#http://}"
+          image_host="${image_host%/}"
+
+          docker run --pull always --rm \
+            -e CODELOGIC_HOST \
+            -e AGENT_UUID \
+            -e AGENT_PASSWORD \
+            -v "${GITHUB_WORKSPACE}:/scan" \
+            -v "${GITHUB_WORKSPACE}/logs:/log_file_path" \
+            "${image_host}/codelogic_dotnet:latest" send_build_info \
+              --agent-uuid="${AGENT_UUID}" \
+              --agent-password="${AGENT_PASSWORD}" \
+              --server="${CODELOGIC_HOST}" \
+              --path=/scan \
+              --build-number="${{ github.run_number }}" \
+              --pipeline-system="GitHub Actions" \
+              --job-name="${{ github.repository }} - ${{ github.workflow }}" \
+              --build-status="${BUILD_STATUS}" \
+              --log-file=/log_file_path/build.log \
+              --log-lines=50000 \
+              --timeout=300 \
+              --verbose
+
+      - name: CodeLogic CI summary
+        if: always()
+        shell: bash
+        run: |
+          {
+            echo "## CodeLogic CI"
+            echo ""
+            echo "| Item | Value |"
+            echo "| --- | --- |"
+            echo "| Repository | \`${{ github.repository }}\` |"
+            echo "| Workflow | \`${{ github.workflow }}\` |"
+            echo "| Run | ${{ github.run_id }} (attempt ${{ github.run_attempt }}) |"
+            echo "| Ref | \`${{ github.ref }}\` |"
+            echo "| SHA | \`${{ github.sha }}\` |"
+            echo "| Build job result | **${{ needs.build.result }}** |"
+            echo "| CodeLogic configured | \`${{ steps.codelogic-config.outputs.configured }}\` |"
+            echo ""
+            echo "CodeLogic scans the published build output when credentials are configured and the build succeeds."
+          } >> "${GITHUB_STEP_SUMMARY}"
