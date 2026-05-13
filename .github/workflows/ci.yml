@@ -91,6 +91,7 @@ jobs:
             "/p:DeployOnBuild=true",
             "/p:WebPublishMethod=FileSystem",
             "/p:DeleteExistingFiles=true",
+            "/p:ExcludeApp_Data=true",
             "/p:PublishUrl=$publishUrl",
             "/p:VisualStudioVersion=17.0",
             "/p:TreatWarningsAsErrors=false"
