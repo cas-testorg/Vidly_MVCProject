@@ -57,30 +57,26 @@ jobs:
           $namespaceManager = New-Object System.Xml.XmlNamespaceManager($projectXml.NameTable)
           $namespaceManager.AddNamespace("msb", "http://schemas.microsoft.com/developer/msbuild/2003")
 
-          $localDbContentItems = @(
-            "App_Data\Vidly_MVCProject.mdf",
-            "App_Data\Vidly_MVCProject_log.ldf",
-            "Vidly_MVCProject.mdf",
-            "Vidly_MVCProject_log.ldf"
-          )
-
           $removedItems = @()
-          foreach ($include in $localDbContentItems) {
+          $contentNodes = @($projectXml.SelectNodes("//msb:Content[@Include]", $namespaceManager))
+          foreach ($node in $contentNodes) {
+            $include = $node.Include
+            if ([string]::IsNullOrWhiteSpace($include) -or $include.Contains("*")) {
+              continue
+            }
+
             $contentPath = Join-Path $env:GITHUB_WORKSPACE $include
             if (Test-Path $contentPath) {
               continue
             }
 
-            $nodes = @($projectXml.SelectNodes("//msb:Content[@Include='$include']", $namespaceManager))
-            foreach ($node in $nodes) {
-              [void] $node.ParentNode.RemoveChild($node)
-              $removedItems += $include
-            }
+            [void] $node.ParentNode.RemoveChild($node)
+            $removedItems += $include
           }
 
           if ($removedItems.Count -gt 0) {
             $projectXml.Save($projectPath)
-            Add-Content -Path $buildLog -Value "Removed missing LocalDB content items from CI project copy: $($removedItems -join ', ')"
+            Add-Content -Path $buildLog -Value "Removed missing Content items from CI project copy: $($removedItems -join ', ')"
           }
 
           function Invoke-LoggedNative {
