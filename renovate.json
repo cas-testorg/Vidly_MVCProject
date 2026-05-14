@@ -4,11 +4,4 @@
     "config:best-practices",
     ":dependencyDashboardApproval"
   ],
-
-  "baseBranchPatterns": ["codelogic"],
-  "dependencyDashboardTitle": "Renovate Dashboard (codelogic)",
-
-  "recreateWhen": "never",
-  "rebaseWhen": "never",
-  "semanticCommits": "disabled"
 }
