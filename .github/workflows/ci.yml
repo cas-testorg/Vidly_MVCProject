@@ -234,9 +234,8 @@ jobs:
               --application "${{ env.APPLICATION_NAME }}" \
               --path /scan \
               --scan-space-name "${SCAN_SPACE_NAME}" \
-              -f=Vidly_MVCProject.dll \
-              -m=Vidly_MVCProject \
-              --rescan \
+              -f Vidly_MVCProject.dll \
+              -m Vidly_MVCProject \
               --expunge-scan-sessions
 
       - name: Send Build Info
