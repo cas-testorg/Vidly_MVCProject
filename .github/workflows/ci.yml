@@ -4,11 +4,11 @@ on:
   #push:
     #branches:
       #- codelogic/**
-      #- renovate/**
+      - renovate/**
   pull_request:
     branches:
-      - codelogic/**
-      #- renovate/**
+      #- codelogic/**
+      - renovate/**
 
 concurrency:
   group: build-scan-${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref }}
