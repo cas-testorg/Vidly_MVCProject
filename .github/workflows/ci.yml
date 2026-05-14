@@ -1,9 +1,14 @@
 name: CI Pipeline (Build + CodeLogic Scan)
 
 on:
-  push:
+  #push:
+    #branches:
+      #- codelogic/**
+      #- renovate/**
   pull_request:
-  workflow_dispatch:
+    branches:
+      - codelogic/**
+      #- renovate/**
 
 concurrency:
   group: build-scan-${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref }}
