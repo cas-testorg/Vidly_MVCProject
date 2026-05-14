@@ -8,9 +8,13 @@ namespace Vidly_MVCProject
 {
     public class MvcApplication : System.Web.HttpApplication
     {
+        public static IMapper Mapper { get; private set; }
+
         protected void Application_Start()
         {
-            Mapper.Initialize(c => c.AddProfile<MappingProfile>());
+            var config = new MapperConfiguration(cfg => cfg.AddProfile<MappingProfile>(), null);
+            Mapper = config.CreateMapper();
+
             GlobalConfiguration.Configure(WebApiConfig.Register);
             AreaRegistration.RegisterAllAreas();
             FilterConfig.RegisterGlobalFilters(GlobalFilters.Filters);
