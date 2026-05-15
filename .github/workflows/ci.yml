@@ -215,6 +215,7 @@ jobs:
           path: logs
 
       - name: Run CodeLogic Scan
+        id: codelogic-scan
         if: needs.build.result == 'success' && steps.codelogic-config.outputs.configured == 'true'
         shell: bash
         run: |
@@ -224,7 +225,11 @@ jobs:
           image_host="${image_host#http://}"
           image_host="${image_host%/}"
           publish_dir="${GITHUB_WORKSPACE}/${{ env.PUBLISH_OUTPUT }}"
+          mkdir -p "${GITHUB_WORKSPACE}/logs"
+          scan_log="${GITHUB_WORKSPACE}/logs/codelogic-scan.log"
+          : > "${scan_log}"
 
+          set +e
           docker run --pull always --rm \
             -e CODELOGIC_HOST \
             -e AGENT_UUID \
@@ -236,32 +241,139 @@ jobs:
               --scan-space-name "${SCAN_SPACE_NAME}" \
               -f Vidly_MVCProject.dll \
               -m Vidly_MVCProject \
-              --expunge-scan-sessions
+              --expunge-scan-sessions \
+            2>&1 | tee -a "${scan_log}"
+          scan_exit="${PIPESTATUS[0]}"
+          set -e
+          exit "${scan_exit}"
+
+      - name: Prepare combined pipeline log for CodeLogic
+        if: always() && steps.codelogic-config.outputs.configured == 'true'
+        env:
+          BUILD_RESULT: ${{ needs.build.result }}
+          SCAN_OUTCOME: ${{ steps.codelogic-scan.outcome }}
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          SCAN_OUTCOME="${SCAN_OUTCOME:-skipped}"
+
+          mkdir -p "${GITHUB_WORKSPACE}/logs"
+          build_log="${GITHUB_WORKSPACE}/logs/build.log"
+          scan_log="${GITHUB_WORKSPACE}/logs/codelogic-scan.log"
+
+          if [[ ! -s "${build_log}" ]]; then
+            {
+              echo "WARNING: logs/build.log was missing or empty before pipeline summary was appended."
+              echo "Typical causes: build job failed before the log was written, or the build-log artifact was not produced."
+              echo "Build job result: ${BUILD_RESULT}"
+            } > "${build_log}"
+          fi
+
+          {
+            echo ""
+            echo "========== Pipeline status (CodeLogic job) =========="
+            echo "Summary generated at (UTC): $(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo ""
+            echo "--- Workflow / run metadata ---"
+            echo "repository: ${{ github.repository }}"
+            echo "workflow: ${{ github.workflow }}"
+            echo "run_id: ${{ github.run_id }}  run_attempt: ${{ github.run_attempt }}  run_number: ${{ github.run_number }}"
+            echo "run_url: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo "event: ${{ github.event_name }}  actor: ${{ github.actor }}  triggering_actor: ${{ github.triggering_actor }}"
+            echo "ref: ${{ github.ref }}  sha: ${{ github.sha }}"
+            echo "workflow_ref: ${{ github.workflow_ref }}  workflow_sha: ${{ github.workflow_sha }}"
+            echo "runner: ${RUNNER_OS:-} ${RUNNER_ARCH:-}  job: ${GITHUB_JOB:-}"
+            echo "head_ref (PR): ${{ github.head_ref }}"
+            echo "base_ref (PR): ${{ github.base_ref }}"
+            echo ""
+            echo "--- Job / step results ---"
+            echo "build job (needs.build): ${BUILD_RESULT}"
+            echo "CodeLogic scan step outcome: ${SCAN_OUTCOME}"
+            echo ""
+            echo "--- Failure / skip hints ---"
+          } >> "${build_log}"
+
+          case "${BUILD_RESULT}" in
+            success) ;;
+            failure)
+              echo "Build job reported failure. See MSBuild/NuGet sections above in this log (from the Windows build job)." >> "${build_log}"
+              ;;
+            cancelled)
+              echo "Build job was cancelled." >> "${build_log}"
+              ;;
+            skipped)
+              echo "Build job was skipped (workflow conditions or upstream)." >> "${build_log}"
+              ;;
+            *)
+              echo "Build job result: ${BUILD_RESULT}" >> "${build_log}"
+              ;;
+          esac
+
+          if [[ "${BUILD_RESULT}" == "success" ]]; then
+            case "${SCAN_OUTCOME}" in
+              failure)
+                echo "CodeLogic scan step failed. See CodeLogic scan log section below (docker analyze output)." >> "${build_log}"
+                ;;
+              cancelled)
+                echo "CodeLogic scan step was cancelled." >> "${build_log}"
+                ;;
+              skipped)
+                echo "CodeLogic scan step was skipped (e.g. credentials not configured at evaluate time, or build not successful)." >> "${build_log}"
+                ;;
+              success) ;;
+              *)
+                echo "CodeLogic scan step outcome: ${SCAN_OUTCOME}" >> "${build_log}"
+                ;;
+            esac
+          fi
+
+          if [[ -s "${scan_log}" ]]; then
+            {
+              echo ""
+              echo "========== CodeLogic scan log (docker analyze) =========="
+            } >> "${build_log}"
+            cat "${scan_log}" >> "${build_log}"
+          fi
 
       - name: Send Build Info
         if: always() && steps.codelogic-config.outputs.configured == 'true'
         env:
           BUILD_RESULT: ${{ needs.build.result }}
+          SCAN_OUTCOME: ${{ steps.codelogic-scan.outcome }}
         shell: bash
         run: |
           set -euo pipefail
 
+          SCAN_OUTCOME="${SCAN_OUTCOME:-skipped}"
+
           mkdir -p "${GITHUB_WORKSPACE}/logs"
-          if [[ ! -s "${GITHUB_WORKSPACE}/logs/build.log" ]]; then
+          build_log="${GITHUB_WORKSPACE}/logs/build.log"
+          if [[ ! -s "${build_log}" ]]; then
             {
               echo "WARNING: logs/build.log was missing or empty when send_build_info ran."
               echo "Build job result: ${BUILD_RESULT}"
-              echo "Check earlier workflow steps for checkout, restore, or MSBuild failures."
-            } > "${GITHUB_WORKSPACE}/logs/build.log"
+              echo "CodeLogic scan step outcome: ${SCAN_OUTCOME}"
+              echo "Check earlier workflow steps for checkout, restore, MSBuild, scan, or prepare-pipeline-log failures."
+            } > "${build_log}"
           fi
 
-          case "${BUILD_RESULT}" in
-            success) BUILD_STATUS="SUCCESS" ;;
-            failure) BUILD_STATUS="FAILURE" ;;
-            cancelled) BUILD_STATUS="CANCELLED" ;;
-            skipped) BUILD_STATUS="SKIPPED" ;;
-            *) BUILD_STATUS="${BUILD_RESULT^^}" ;;
-          esac
+          if [[ "${BUILD_RESULT}" == "success" ]]; then
+            case "${SCAN_OUTCOME}" in
+              failure) BUILD_STATUS="FAILURE" ;;
+              cancelled) BUILD_STATUS="CANCELLED" ;;
+              success) BUILD_STATUS="SUCCESS" ;;
+              skipped) BUILD_STATUS="SKIPPED" ;;
+              *) BUILD_STATUS="${SCAN_OUTCOME^^}" ;;
+            esac
+          else
+            case "${BUILD_RESULT}" in
+              failure) BUILD_STATUS="FAILURE" ;;
+              cancelled) BUILD_STATUS="CANCELLED" ;;
+              skipped) BUILD_STATUS="SKIPPED" ;;
+              *) BUILD_STATUS="${BUILD_RESULT^^}" ;;
+            esac
+          fi
 
           image_host="${CODELOGIC_HOST#https://}"
           image_host="${image_host#http://}"
@@ -299,10 +411,12 @@ jobs:
             echo "| Repository | \`${{ github.repository }}\` |"
             echo "| Workflow | \`${{ github.workflow }}\` |"
             echo "| Run | ${{ github.run_id }} (attempt ${{ github.run_attempt }}) |"
+            echo "| Run URL | ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }} |"
             echo "| Ref | \`${{ github.ref }}\` |"
             echo "| SHA | \`${{ github.sha }}\` |"
             echo "| Build job result | **${{ needs.build.result }}** |"
+            echo "| CodeLogic scan step | \`${{ steps.codelogic-scan.outcome }}\` |"
             echo "| CodeLogic configured | \`${{ steps.codelogic-config.outputs.configured }}\` |"
             echo ""
-            echo "CodeLogic scans the published build output when credentials are configured and the build succeeds."
+            echo "CodeLogic scans the published build output when credentials are configured and the build succeeds. Build info sends a combined log (Windows build log plus pipeline metadata, scan outcome, and \`docker analyze\` output when present)."
           } >> "${GITHUB_STEP_SUMMARY}"
