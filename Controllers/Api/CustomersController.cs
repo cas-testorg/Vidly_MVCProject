@@ -12,10 +12,12 @@ namespace Vidly_MVCProject.Controllers.Api
     public class CustomersController : ApiController
     {
         private AppDbContext _appDbContext;
+        private IMapper _mapper;
 
         public CustomersController()
         {
             _appDbContext = new AppDbContext();
+            _mapper = MvcApplication.Mapper;
         }
 
         //GET /api/customers
@@ -30,7 +32,7 @@ namespace Vidly_MVCProject.Controllers.Api
 
             var customerDtos = customersQuery
                 .ToList()
-                .Select(Mapper.Map<Customer, CustomerDto>);
+                .Select(_mapper.Map<Customer, CustomerDto>);
 
             return Ok(customerDtos);
         }
@@ -44,7 +46,7 @@ namespace Vidly_MVCProject.Controllers.Api
             if (customer == null)
                 return NotFound();
 
-            return Ok(Mapper.Map<Customer, CustomerDto>(customer));
+            return Ok(_mapper.Map<Customer, CustomerDto>(customer));
         }
 
         //POST /api/customers
@@ -54,7 +56,7 @@ namespace Vidly_MVCProject.Controllers.Api
             if (!ModelState.IsValid)
                 return BadRequest();
 
-            var customer = Mapper.Map<CustomerDto, Customer>(customerDto);
+            var customer = _mapper.Map<CustomerDto, Customer>(customerDto);
             _appDbContext.Customers.Add(customer);
             _appDbContext.SaveChanges();
 
@@ -75,7 +77,7 @@ namespace Vidly_MVCProject.Controllers.Api
             if (customerInDb == null)
                 throw new HttpResponseException(HttpStatusCode.NotFound);
 
-            Mapper.Map(customerDto, customerInDb);
+            _mapper.Map(customerDto, customerInDb);
 
             _appDbContext.SaveChanges();
         }
