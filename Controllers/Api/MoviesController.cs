@@ -13,10 +13,12 @@ namespace Vidly_MVCProject.Controllers.Api
     public class MoviesController : ApiController
     {
         private AppDbContext _appDbContext;
+        private IMapper _mapper;
 
         public MoviesController()
         {
             _appDbContext = new AppDbContext();
+            _mapper = MvcApplication.Mapper;
         }
 
         //GET /api/movies
@@ -31,7 +33,7 @@ namespace Vidly_MVCProject.Controllers.Api
 
             return moviesQuery
                 .ToList()
-                .Select(Mapper.Map<Movie, MovieDto>);
+                .Select(_mapper.Map<Movie, MovieDto>);
         }
 
         //GET /api/movies/1
@@ -43,7 +45,7 @@ namespace Vidly_MVCProject.Controllers.Api
             if (movie == null)
                 return NotFound();
 
-            return Ok(Mapper.Map<Movie, MovieDto>(movie));
+            return Ok(_mapper.Map<Movie, MovieDto>(movie));
         }
 
         //POST /api/movies
@@ -54,7 +56,7 @@ namespace Vidly_MVCProject.Controllers.Api
             if (!ModelState.IsValid)
                 return BadRequest();
 
-            var movie = Mapper.Map<MovieDto, Movie>(movieDto);
+            var movie = _mapper.Map<MovieDto, Movie>(movieDto);
             _appDbContext.Movies.Add(movie);
             _appDbContext.SaveChanges();
 
@@ -76,7 +78,7 @@ namespace Vidly_MVCProject.Controllers.Api
             if (movieInDb == null)
                 throw new HttpResponseException(HttpStatusCode.NotFound);
 
-            Mapper.Map(movieDto, movieInDb);
+            _mapper.Map(movieDto, movieInDb);
 
             _appDbContext.SaveChanges();
         }
